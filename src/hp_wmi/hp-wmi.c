@@ -662,7 +662,7 @@ static int hp_wmi_fan_speed_reset(void)
 
 static bool is_victus_s_thermal_profile(void);
 
-static int hp_wmi_fan_speed_set(int fan, int fan_speed)
+static int hp_wmi_set_fan_speed(int fan, int fan_speed)
 {
 	// check if manual fan control is enabled (hp_fan_control_mode)
 	if (hp_fan_control_mode != HP_FAN_MODE_MANUAL) {
@@ -2268,7 +2268,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_fan:
 		if (is_manual_fan_control_board()) {
 			pr_info("Manual fan control board detected\n");
-			return hp_wmi_fan_speed_set(channel, val);
+			return hp_wmi_set_fan_speed(channel, val);
 		} else {
 			pr_info("Manual fan control board not detected\n");
 			return -EINVAL;
