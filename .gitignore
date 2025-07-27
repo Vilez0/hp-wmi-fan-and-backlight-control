@@ -7,3 +7,5 @@
 *.mod
 Module.symvers
 modules.order
+pkg/
+*.pkg.tar.zst
