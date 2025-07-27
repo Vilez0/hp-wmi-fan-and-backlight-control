@@ -313,6 +313,13 @@ static enum platform_profile_option active_platform_profile;
 static bool platform_profile_support;
 static bool zero_insize_support;
 
+/* Global variable to track fan control mode */
+static enum {
+	HP_FAN_MODE_AUTOMATIC = 0,
+	HP_FAN_MODE_MANUAL = 1,
+	HP_FAN_MODE_MAX = 2
+} hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
+
 static struct rfkill *wifi_rfkill;
 static struct rfkill *bluetooth_rfkill;
 static struct rfkill *wwan_rfkill;
@@ -615,6 +622,20 @@ static int omen_thermal_profile_get(void)
 	return data;
 }
 
+static int is_manual_fan_control_board(void)
+{
+	int ret;
+	unsigned char buffer[8] = { 0 };
+	ret = hp_wmi_perform_query(HPWMI_GET_SYSTEM_DESIGN_DATA, HPWMI_GM,
+				   &buffer, sizeof(buffer), sizeof(buffer));
+	if (ret)
+		return 0;
+
+	pr_info("Hp wmi software fan support %d", buffer[4]);
+
+	return buffer[4];
+}
+
 static int hp_wmi_fan_speed_max_set(int enabled)
 {
 	int ret;
@@ -635,6 +656,45 @@ static int hp_wmi_fan_speed_reset(void)
 
 	ret = hp_wmi_perform_query(HPWMI_FAN_SPEED_SET_QUERY, HPWMI_GM,
 				   &fan_speed, sizeof(fan_speed), 0);
+
+	return ret;
+}
+
+static bool is_victus_s_thermal_profile(void);
+
+static int hp_wmi_fan_speed_set(int fan, int fan_speed)
+{
+	// check if manual fan control is enabled (hp_fan_control_mode)
+	if (hp_fan_control_mode != HP_FAN_MODE_MANUAL) {
+		return -EINVAL;
+	}
+	short int fan1_speed;
+	short int fan2_speed;
+
+	// TODO: explain why dividing by 100
+	if (fan == 0) {
+		fan1_speed = fan_speed / 100;
+		if (is_victus_s_thermal_profile()) {
+			fan2_speed = hp_wmi_get_fan_speed_victus_s(1) / 100;
+		} else {
+			fan2_speed = hp_wmi_get_fan_speed(1) / 100;
+		}
+	} else if (fan == 1) {
+		fan2_speed = fan_speed / 100;
+		if (is_victus_s_thermal_profile()) {
+			fan1_speed = hp_wmi_get_fan_speed_victus_s(0) / 100;
+		} else {
+			fan1_speed = hp_wmi_get_fan_speed(0) / 100;
+		}
+	} else {
+		return -EINVAL;
+	};
+
+	u8 fans_speed[2] = { fan1_speed, fan2_speed };
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_FAN_SPEED_SET_QUERY, HPWMI_GM,
+				   &fans_speed, sizeof(fans_speed), 0);
 
 	return ret;
 }
@@ -1985,6 +2045,7 @@ static int thermal_profile_setup(struct platform_device *device)
 }
 
 static int hp_wmi_hwmon_init(void);
+static void hp_wmi_init_fan_control_mode(void);
 
 static int __init hp_wmi_bios_setup(struct platform_device *device)
 {
@@ -2010,6 +2071,9 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 
 	if (err < 0)
 		return err;
+
+	/* Initialize fan control mode based on current hardware state */
+	hp_wmi_init_fan_control_mode();
 
 	thermal_profile_setup(device);
 
@@ -2104,12 +2168,18 @@ static umode_t hp_wmi_hwmon_is_visible(const void *data,
 	case hwmon_pwm:
 		return 0644;
 	case hwmon_fan:
-		if (is_victus_s_thermal_profile()) {
-			if (hp_wmi_get_fan_speed_victus_s(channel) >= 0)
-				return 0444;
-		} else {
-			if (hp_wmi_get_fan_speed(channel) >= 0)
-				return 0444;
+		if (attr == hwmon_fan_input) {
+			if (is_victus_s_thermal_profile()) {
+				if (hp_wmi_get_fan_speed_victus_s(channel) >= 0)
+					return 0444;
+			} else {
+				if (hp_wmi_get_fan_speed(channel) >= 0)
+					return 0444;
+			}
+		} else if (attr == hwmon_fan_target) {
+			if (is_manual_fan_control_board()) {
+				return 0644;
+			}
 		}
 		break;
 	default:
@@ -2135,15 +2205,17 @@ static int hp_wmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		*val = ret;
 		return 0;
 	case hwmon_pwm:
-		switch (hp_wmi_fan_speed_max_get()) {
-		case 0:
-			/* 0 is automatic fan, which is 2 for hwmon */
+		switch (hp_fan_control_mode) {
+		case HP_FAN_MODE_AUTOMATIC:
+			/* Automatic fan control, which is 2 for hwmon */
 			*val = 2;
 			return 0;
-		case 1:
-			/* 1 is max fan, which is 0
-			 * (no fan speed control) for hwmon
-			 */
+		case HP_FAN_MODE_MANUAL:
+			/* Manual fan control, which is 1 for hwmon */
+			*val = 1;
+			return 0;
+		case HP_FAN_MODE_MAX:
+			/* Max fan speed (no control), which is 0 for hwmon */
 			*val = 0;
 			return 0;
 		default:
@@ -2165,16 +2237,40 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 			if (is_victus_s_thermal_profile())
 				hp_wmi_get_fan_count_userdefine_trigger();
 			/* 0 is no fan speed control (max), which is 1 for us */
+			hp_fan_control_mode = HP_FAN_MODE_MAX;
 			return hp_wmi_fan_speed_max_set(1);
+		case 1:
+			if (is_manual_fan_control_board()) {
+				pr_info("Manual fan control board detected\n");
+				hp_fan_control_mode = HP_FAN_MODE_MANUAL;
+				if (is_victus_s_thermal_profile()) {
+					hp_wmi_get_fan_count_userdefine_trigger();
+					hp_wmi_fan_speed_max_reset();
+				} else {
+					hp_wmi_fan_speed_max_set(0);
+				}
+				return 0;
+			} else {
+				pr_info("Manual fan control board not detected\n");
+				return -EINVAL;
+			}
 		case 2:
 			/* 2 is automatic speed control, which is 0 for us */
+			hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
 			if (is_victus_s_thermal_profile()) {
 				hp_wmi_get_fan_count_userdefine_trigger();
 				return hp_wmi_fan_speed_max_reset();
 			} else
 				return hp_wmi_fan_speed_max_set(0);
 		default:
-			/* we don't support manual fan speed control */
+			return -EINVAL;
+		}
+	case hwmon_fan:
+		if (is_manual_fan_control_board()) {
+			pr_info("Manual fan control board detected\n");
+			return hp_wmi_fan_speed_set(channel, val);
+		} else {
+			pr_info("Manual fan control board not detected\n");
 			return -EINVAL;
 		}
 	default:
@@ -2185,6 +2281,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 static const struct hwmon_channel_info * const info[] = {
 	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT, HWMON_F_INPUT),
 	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_ENABLE),
+	HWMON_CHANNEL_INFO(fan, HWMON_F_TARGET, HWMON_F_TARGET),
 	NULL
 };
 
@@ -2289,3 +2386,29 @@ static void __exit hp_wmi_exit(void)
 	}
 }
 module_exit(hp_wmi_exit);
+
+static void hp_wmi_init_fan_control_mode(void)
+{
+	int max_fan_state;
+
+	/* Initialize fan control mode based on current hardware state */
+	max_fan_state = hp_wmi_fan_speed_max_get();
+	if (max_fan_state >= 0) {
+		switch (max_fan_state) {
+		case 0:
+			hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
+			break;
+		case 1:
+			hp_fan_control_mode = HP_FAN_MODE_MAX;
+			break;
+		default:
+			/* Default to automatic if unknown state */
+			hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
+			break;
+		}
+		pr_info("Initialized fan control mode to %d\n", hp_fan_control_mode);
+	} else {
+		pr_warn("Failed to get initial fan control state, defaulting to automatic\n");
+		hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
+	}
+}
