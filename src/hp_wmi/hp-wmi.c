@@ -320,6 +320,7 @@ static struct notifier_block platform_power_source_nb;
 static enum platform_profile_option active_platform_profile;
 static bool platform_profile_support;
 static bool zero_insize_support;
+static bool manual_fan_control_board;
 
 
 static struct rfkill *wifi_rfkill;
@@ -2079,6 +2080,8 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 			hp_wmi_rfkill2_setup(device);
 	}
 
+	manual_fan_control_board = is_manual_fan_control_board();
+
 	err = hp_wmi_hwmon_init();
 
 	if (err < 0)
@@ -2289,7 +2292,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 				return -EINVAL;
 			}
 		case hwmon_pwm_input:
-			if (is_manual_fan_control_board()) {
+			if (manual_fan_control_board) {
 				hp_fan_control_mode = HP_FAN_MODE_MANUAL;
 				int speed = (val * fan_max_rpm_table[channel]) / 255;
 				return hp_wmi_set_fan_speed(channel, speed);
@@ -2301,7 +2304,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 		}
 		break;
 	case hwmon_fan:
-		if (is_manual_fan_control_board()) {
+		if (manual_fan_control_board) {
 			pr_info("Manual fan control board detected\n");
 			return hp_wmi_set_fan_speed(channel, val);
 		} else {
