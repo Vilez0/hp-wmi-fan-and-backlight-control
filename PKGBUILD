@@ -3,8 +3,8 @@
 _pkgbase=hp_wmi
 pkgname=${_pkgbase}
 pkgver=next
-pkgrel=3
-pkgdesc="HP fan control driver test"
+pkgrel=4
+pkgdesc="HP fan and led control driver test"
 url=
 license=("GPL")
 arch=('x86_64')
