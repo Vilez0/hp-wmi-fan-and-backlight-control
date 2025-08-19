@@ -30,6 +30,8 @@
 #include <linux/rfkill.h>
 #include <linux/string.h>
 #include <linux/dmi.h>
+#include <linux/leds.h>
+#include <linux/led-class-multicolor.h>
 
 MODULE_AUTHOR("Matthew Garrett <mjg59@srcf.ucam.org>");
 MODULE_DESCRIPTION("HP laptop WMI driver");
@@ -48,6 +50,9 @@ MODULE_ALIAS("wmi:5FB7F034-2C63-45E9-BE91-3D44E2C707E4");
 #define HP_FAN_SPEED_AUTOMATIC	 0x00
 #define HP_POWER_LIMIT_DEFAULT	 0x00
 #define HP_POWER_LIMIT_NO_CHANGE 0xFF
+
+#define HP_BACKLIGHT_OFF 0x64
+#define HP_BACKLIGHT_ON 0xE4
 
 #define ACPI_AC_CLASS "ac_adapter"
 
@@ -180,16 +185,25 @@ enum hp_wmi_gm_commandtype {
 	HPWMI_GET_GPU_THERMAL_MODES_QUERY	= 0x21,
 	HPWMI_SET_GPU_THERMAL_MODES_QUERY	= 0x22,
 	HPWMI_SET_POWER_LIMITS_QUERY		= 0x29,
+	HPWMI_KEYBOARD_TYPE_QUERY	= 0x2b,
 	HPWMI_VICTUS_S_FAN_SPEED_GET_QUERY	= 0x2D,
 	HPWMI_FAN_SPEED_SET_QUERY		= 0x2E,
 	HPWMI_GET_FAN_TABLE_QUERY		= 0x2F,
 };
 
+enum hp_wmi_backlight_commandtype {
+	HPWMI_COLOR_GET_QUERY	= 0x02,
+	HPWMI_COLOR_SET_QUERY	= 0x03,
+	HPWMI_BRIGHTNESS_GET_QUERY	= 0x04,
+	HPWMI_BRIGHTNESS_SET_QUERY	= 0x05,
+};
+
 enum hp_wmi_command {
-	HPWMI_READ	= 0x01,
-	HPWMI_WRITE	= 0x02,
-	HPWMI_ODM	= 0x03,
-	HPWMI_GM	= 0x20008,
+	HPWMI_READ		= 0x01,
+	HPWMI_WRITE		= 0x02,
+	HPWMI_ODM		= 0x03,
+	HPWMI_GM		= 0x20008,
+	HPWMI_BACKLIGHT	= 0x20009,
 };
 
 enum hp_wmi_hardware_mask {
@@ -253,12 +267,26 @@ enum hp_thermal_profile {
 	HP_THERMAL_PROFILE_QUIET		= 0x03,
 };
 
+enum hp_keyboard_type {
+	HP_KEYBOARD_TYPE_NORMAL = 0x0,
+	HP_KEYBOARD_TYPE_FOURZONE_WITH_NUMPAD = 0x1,
+	HP_KEYBOARD_TYPE_FOURZONE_WITHOUT_NUMPAD = 0x2,
+	HP_KEYBOARD_TYPE_RGB_PER_KEY = 0x3,
+	HP_KEYBOARD_TYPE_SINGLEZONE_WITH_NUMPAD = 0x4,
+	HP_KEYBOARD_TYPE_SINGLEZONE_WITHOUT_NUMPAD = 0x5,
+};
+
 static enum {
 	HP_FAN_MODE_MAX = 0,
 	HP_FAN_MODE_MANUAL = 1,
 	HP_FAN_MODE_AUTOMATIC = 2
 
 } hp_fan_control_mode = HP_FAN_MODE_AUTOMATIC;
+
+struct hp_mc_leds {
+	struct led_classdev_mc devices[4];
+	enum led_brightness last_brightness;
+};
 
 #define IS_HWBLOCKED(x) ((x & HPWMI_POWER_FW_OR_HW) != HPWMI_POWER_FW_OR_HW)
 #define IS_SWBLOCKED(x) !(x & HPWMI_POWER_SOFT)
@@ -317,11 +345,11 @@ static struct input_dev *camera_shutter_input_dev;
 static struct platform_device *hp_wmi_platform_dev;
 static struct device *platform_profile_device;
 static struct notifier_block platform_power_source_nb;
+static struct hp_mc_leds hp_multicolor_leds;
 static enum platform_profile_option active_platform_profile;
 static bool platform_profile_support;
 static bool zero_insize_support;
 static bool manual_fan_control_board;
-
 
 static struct rfkill *wifi_rfkill;
 static struct rfkill *bluetooth_rfkill;
@@ -1362,6 +1390,161 @@ fail:
 	return err;
 }
 
+static int hp_kbd_backlight_set_rgb_color(int zone, int red, int green, int blue)
+{
+	int ret;
+	u8 color_table[128]; 
+
+	color_table[0] = HPWMI_COLOR_SET_QUERY;
+	// RGB color data starts at offset 25 +3 per zone, e.g. if zone 1 starts in 25 zone 2 starts in 28
+	color_table[25 + zone * 3] = red;
+	color_table[26 + zone * 3] = green;
+	color_table[27 + zone * 3] = blue;
+
+	ret = hp_wmi_perform_query(HPWMI_COLOR_SET_QUERY, HPWMI_BACKLIGHT,
+				   color_table, sizeof(color_table), sizeof(color_table));
+	if (ret) {
+		pr_err("RGB setting failed with error: %d\n", ret);
+		return ret < 0 ? ret : -EINVAL;
+	}
+	return 0;
+}
+
+static bool hp_kbd_backlight_is_on(void) {
+	u8 data;
+
+	hp_wmi_perform_query(HPWMI_BRIGHTNESS_GET_QUERY, HPWMI_BACKLIGHT, &data,
+				sizeof(data), sizeof(data));
+
+	return data == HP_BACKLIGHT_ON;
+}
+
+static enum led_brightness hp_kbd_get_brightness(struct led_classdev *led_cdev)
+{
+	bool led_on = hp_kbd_backlight_is_on();
+	if (!led_on && led_cdev->brightness != LED_OFF) {
+		hp_multicolor_leds.last_brightness = led_cdev->brightness;
+		return LED_OFF;
+	} else if (led_on && led_cdev->brightness == LED_OFF) {
+		return hp_multicolor_leds.last_brightness;
+	}
+
+	return led_cdev->brightness;
+}
+
+static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
+					enum led_brightness brightness)
+{
+	u8 data;
+	if (brightness == LED_OFF) {
+		data= HP_BACKLIGHT_OFF;
+	} else {
+		data = HP_BACKLIGHT_ON;
+	}
+	hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT, &data,
+			 sizeof(data), sizeof(data));
+
+	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(led_cdev);
+	led_mc_calc_color_components(mc_cdev, brightness);
+
+	int red = mc_cdev->subled_info[0].brightness;
+	int green = mc_cdev->subled_info[1].brightness;
+	int blue = mc_cdev->subled_info[2].brightness;
+
+	int zone;
+	for (zone = 0; zone < ARRAY_SIZE(hp_multicolor_leds.devices); zone++) {
+        if (hp_multicolor_leds.devices[zone].led_cdev.name == led_cdev->name) {
+            break;
+        }
+	}
+	return hp_kbd_backlight_set_rgb_color(zone, red, green, blue);
+}
+
+static int __init hp_mc_leds_register(int num_zones)
+{
+	u8 color_table[128]; 
+
+	hp_wmi_perform_query(HPWMI_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
+		  color_table, zero_if_sup(color_table),
+		  sizeof(color_table));
+
+	for (int zone = 0; zone < num_zones; zone++) {
+		static struct led_classdev_mc multicolor_led_dev;
+		struct led_classdev *led_cdev;
+		struct mc_subled *mc_subled_info; 
+
+		led_cdev = &multicolor_led_dev.led_cdev;
+		led_cdev->name = kasprintf(GFP_KERNEL, "hp::kbd_backlight");
+		if (num_zones > 1) {
+			led_cdev->name = kasprintf(GFP_KERNEL, "hp::kbd_backlight_zone%d", zone);
+		}
+		led_cdev->brightness = hp_kbd_backlight_is_on() ? LED_FULL : LED_OFF;
+		led_cdev->max_brightness = LED_FULL;
+		led_cdev->brightness_set_blocking = hp_kbd_set_brightness;
+		led_cdev->flags = LED_CORE_SUSPENDRESUME | LED_RETAIN_AT_SHUTDOWN;
+		led_cdev->brightness_get = hp_kbd_get_brightness;
+		mc_subled_info = devm_kzalloc(&hp_wmi_platform_dev->dev,
+					       sizeof(struct mc_subled) * 3,
+					       GFP_KERNEL);
+		if (!mc_subled_info)
+			return -ENOMEM;
+
+		mc_subled_info[0].color_index = LED_COLOR_ID_RED;
+		mc_subled_info[1].color_index = LED_COLOR_ID_GREEN;
+		mc_subled_info[2].color_index = LED_COLOR_ID_BLUE;
+
+		for (int i = 0; i < 3; i++) {
+			mc_subled_info[i].channel = zone * 3 + i;
+			mc_subled_info[i].intensity = color_table[25 + zone * 3 + i]; // RGB color values start at offset 25 with 3 bytes per zone;
+			mc_subled_info[i].brightness = LED_FULL;
+		}
+
+		multicolor_led_dev.subled_info = mc_subled_info;
+		multicolor_led_dev.num_colors = 3;
+
+		int ret = devm_led_classdev_multicolor_register(&hp_wmi_platform_dev->dev, &multicolor_led_dev);
+		if (ret) {
+			pr_err("Failed to register multicolor LED: %d\n", ret);
+			return ret;
+		}
+		hp_multicolor_leds.devices[zone] = multicolor_led_dev;
+	}
+	return 0;
+}
+
+static int __init hp_kbd_rgb_setup(void)
+{
+	u8 keyboard_type;
+	hp_wmi_perform_query(HPWMI_KEYBOARD_TYPE_QUERY, HPWMI_GM, &keyboard_type,
+			 sizeof(keyboard_type), sizeof(keyboard_type));
+
+	switch (keyboard_type) {
+		case HP_KEYBOARD_TYPE_NORMAL:
+			pr_info("Normal keyboard detected, RGB keyboard support not available\n");
+			return -ENODEV;
+		case HP_KEYBOARD_TYPE_FOURZONE_WITH_NUMPAD:
+		case HP_KEYBOARD_TYPE_FOURZONE_WITHOUT_NUMPAD:
+			pr_info("keyboard type %d, four zone RGB keyboard support\n",
+				keyboard_type);
+			// return hp_mc_leds_register(4); WIP
+			return -ENODEV;
+		case HP_KEYBOARD_TYPE_RGB_PER_KEY:
+			pr_info("per key-RGB keyboard detected but not supported yet\n");
+			return -ENODEV;
+		case HP_KEYBOARD_TYPE_SINGLEZONE_WITH_NUMPAD:
+		case HP_KEYBOARD_TYPE_SINGLEZONE_WITHOUT_NUMPAD:
+			pr_info("keyboard type %d, registering single zone RGB keyboard support\n",
+				keyboard_type);
+			return hp_mc_leds_register(1);
+			break;
+		default:
+			pr_info("Unknown keyboard type %d, RGB keyboard support not available\n",
+				keyboard_type);
+			return -ENODEV;
+	}
+	return 0;
+}
+
 static int platform_profile_omen_get_ec(enum platform_profile_option *profile)
 {
 	int tp;
@@ -2088,6 +2271,7 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		return err;
 
 	thermal_profile_setup(device);
+	hp_kbd_rgb_setup();
 
 	hp_wmi_get_max_fan_speed();
 
