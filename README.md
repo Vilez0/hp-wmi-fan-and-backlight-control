@@ -44,6 +44,8 @@ sudo insmod hp-wmi.ko
     echo 5200 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/fan2_target # will set fan2 to 5200 rpm
     ```
 
+- Fn+P Shortcut: On laptops that support it, the Fn+P shortcut for switching performance profiles should work OOTB. You can verify if its working by monitoring the `/sys/firmware/acpi/platform_profile` file.
+
 ### Tested on:
 - Victus 16‑s1 (9Z791EA) — tested by me.
 - I need testers to report which models it works on or not. see https://github.com/Vilez0/hp-wmi-fan-and-backlight-control/issues/1
