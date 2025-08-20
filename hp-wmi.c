@@ -353,8 +353,12 @@ static struct notifier_block platform_power_source_nb;
 static struct hp_mc_leds hp_multicolor_leds;
 static struct hp_fan_control hp_fan_control;
 static enum platform_profile_option active_platform_profile;
+static bool force_fan_control_support;
 static bool platform_profile_support;
 static bool zero_insize_support;
+
+module_param(force_fan_control_support, bool, 0444);
+MODULE_PARM_DESC(force_fan_control_support, "Force fan control support");
 
 static struct rfkill *wifi_rfkill;
 static struct rfkill *bluetooth_rfkill;
@@ -660,6 +664,8 @@ static int omen_thermal_profile_get(void)
 
 static int is_manual_fan_control_board(void)
 {
+	if (force_fan_control_support)
+		return 1;
 	int ret;
 	unsigned char buffer[8] = { 0 };
 	ret = hp_wmi_perform_query(HPWMI_GET_SYSTEM_DESIGN_DATA, HPWMI_GM,
@@ -2474,7 +2480,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 		}
 		break;
 	case hwmon_fan:
-		if (val > hp_fan_control.max_rpms[channel])
+		if (val > hp_fan_control.max_rpms[channel] && !force_fan_control_support)
 			return -EINVAL;
 		if (hp_fan_control.have_manual_control) {
 			if (is_victus_s_thermal_profile())
