@@ -1,0 +1,54 @@
+## hp-wmi manual fan + keyboard RGB control
+
+This is an Initial module for manual fan control and keyboard RGB for devices that support it. Single‑zone RGB works now; I plan to add 4‑zone but I need testers.
+
+### Installation:
+
+Dkms:
+```
+git clone https://github.com/Vilez0/hp-wmi-fan-and-backlight-control
+cd hp-wmi-fan-and-backlight-control
+make
+sudo make install-dkms
+```
+
+Arch package:
+```
+git clone https://github.com/Vilez0/hp-wmi-fan-and-backlight-control
+cd hp-wmi-fan-and-backlight-control
+make install-arch
+```
+
+or if you just want to test the module (not permanent):
+```bash
+git clone https://github.com/Vilez0/hp-wmi-fan-and-backlight-control
+cd hp-wmi-fan-and-backlight-control/
+make
+sudo rmmod hp-wmi
+sudo modprobe led_class_multicolor
+sudo insmod hp-wmi.ko
+```
+
+### Usage 
+- Keyboard (single‑zone RGB): control under `/sys/class/leds/hp::kbd_backlight`.
+  - Use the multicolor interface attribute `multi_intensity` which accepts `R G B` (0–255 each).
+  - Example:
+    ```bash
+    echo "255 0 0" | sudo tee /sys/class/leds/hp::kbd_backlight/multi_intensity # Set to red
+    echo 128 | sudo tee /sys/class/leds/hp::kbd_backlight/brightness # Change brightness to 50% (0-255)
+    ```
+
+- Fans: control via hwmon `pwm` files (0–255; 255 = 100%).
+    ```bash
+    echo 200 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm1
+    echo 100 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm2
+    ```
+
+### Tested on:
+- Victus 16‑s1 (9Z791EA) — tested by me.
+- I need testers to report which models it works on or not. see https://github.com/Vilez0/hp-wmi-fan-and-backlight-control/issues/1
+
+### Disclaimer
+USE IT AT YOUR OWN RISK. I DO NOT ACCEPT ANY RESPONSIBILITY.
+
+
