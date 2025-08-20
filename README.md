@@ -38,10 +38,10 @@ sudo insmod hp-wmi.ko
     echo 128 | sudo tee /sys/class/leds/hp::kbd_backlight/brightness # Change brightness to 50% (0-255)
     ```
 
-- Fans: control via hwmon `pwm` files (0–255; 255 = 100%).
+- Fans: control via `fanX_target` files (check fanX_max for the max values. Anything above the max values will return -EINVAL).
     ```bash
-    echo 200 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm1
-    echo 100 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm2
+    echo 5500 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/fan1_target  # will set fan1 to 5500 rpm
+    echo 5200 | sudo tee /sys/devices/platform/hp-wmi/hwmon/hwmon*/fan2_target # will set fan2 to 5200 rpm
     ```
 
 ### Tested on:

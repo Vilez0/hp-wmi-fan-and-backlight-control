@@ -2387,6 +2387,10 @@ static umode_t hp_wmi_hwmon_is_visible(const void *data,
 			if (hp_fan_control.have_manual_control) {
 				return 0444;
 			}
+		} else if (attr == hwmon_fan_target) {
+			if (hp_fan_control.have_manual_control) {
+				return 0644;
+			}
 		}
 		break;
 	default:
@@ -2421,34 +2425,22 @@ static int hp_wmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		}
 		return 0;
 	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_input:
-			if (is_victus_s_thermal_profile())
-				ret = hp_wmi_get_fan_speed_victus_s(channel);
-			else
-				ret = hp_wmi_get_fan_speed(channel);
-			if (ret < 0)
-				return ret;
-
-			*val = (ret * 255) / hp_fan_control.max_rpms[channel];
-			break;
-		case hwmon_pwm_enable:
-			switch (hp_fan_control.mode) {
-			case HP_FAN_MODE_MAX:
-				*val = 0;
-				return 0;
-			case HP_FAN_MODE_MANUAL:
+		switch (hp_fan_control.mode) {
+		case HP_FAN_MODE_MAX:
+			*val = 0;
+			return 0;
+		case HP_FAN_MODE_MANUAL:
+			if (hp_fan_control.have_manual_control) {
 				*val = 1;
 				return 0;
-			case HP_FAN_MODE_AUTOMATIC:
-				*val = 2;
-				return 0;
-			default:
-				/* shouldn't happen */
-				return -ENODATA;
 			}
-		default:
 			return -EINVAL;
+		case HP_FAN_MODE_AUTOMATIC:
+			*val = 2;
+			return 0;
+		default:
+			/* shouldn't happen */
+			return -ENODATA;
 		}
 		return 0;
 	default:
@@ -2461,49 +2453,36 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 {
 	switch (type) {
 	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_enable:
-			switch (val) {
-			case 0:
-				hp_fan_control.mode = HP_FAN_MODE_MAX;
-				if (is_victus_s_thermal_profile())
-					hp_wmi_get_fan_count_userdefine_trigger();
-				/* 0 is no fan speed control (max), which is 1 for us */
-				return hp_wmi_fan_speed_max_set(1);
-			case 1:
-				hp_fan_control.mode = HP_FAN_MODE_MANUAL;
-				return 0;
-			case 2:
-				hp_fan_control.mode = HP_FAN_MODE_AUTOMATIC;
-				/* 2 is automatic speed control, which is 0 for us */
-				if (is_victus_s_thermal_profile()) {
-					hp_wmi_get_fan_count_userdefine_trigger();
-					return hp_wmi_fan_speed_max_reset();
-				} else
-					return hp_wmi_fan_speed_max_set(0);
-			default:
-				return -EINVAL;
-			}
-		case hwmon_pwm_input:
-			if (hp_fan_control.have_manual_control) {
-				hp_fan_control.mode = HP_FAN_MODE_MANUAL;
-				int speed = (val * hp_fan_control.max_rpms[channel]) / 255;
-				return hp_wmi_set_fan_speed(channel, speed);
-			} else {
-				return -EINVAL;
-			}
+		switch (val) {
+		case 0:
+			hp_fan_control.mode = HP_FAN_MODE_MAX;
+			if (is_victus_s_thermal_profile())
+				hp_wmi_get_fan_count_userdefine_trigger();
+			return hp_wmi_fan_speed_max_set(1);
+		case 1:
+			hp_fan_control.mode = HP_FAN_MODE_MANUAL;
+			return 0;
+		case 2:
+			hp_fan_control.mode = HP_FAN_MODE_AUTOMATIC;
+			if (is_victus_s_thermal_profile()) {
+				hp_wmi_get_fan_count_userdefine_trigger();
+				return hp_wmi_fan_speed_max_reset();
+			} else
+				return hp_wmi_fan_speed_max_set(0);
 		default:
 			return -EINVAL;
 		}
 		break;
 	case hwmon_fan:
-		if (hp_fan_control.have_manual_control) {
-			pr_info("Manual fan control board detected\n");
-			return hp_wmi_set_fan_speed(channel, val);
-		} else {
-			pr_info("Manual fan control board not detected\n");
+		if (val > hp_fan_control.max_rpms[channel])
 			return -EINVAL;
+		if (hp_fan_control.have_manual_control) {
+			if (is_victus_s_thermal_profile())
+				hp_wmi_get_fan_count_userdefine_trigger();
+			hp_fan_control.mode = HP_FAN_MODE_MANUAL;
+			return hp_wmi_set_fan_speed(channel, val);
 		}
+		return -EINVAL;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -2512,8 +2491,8 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 static const struct hwmon_channel_info * const info[] = {
 	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT, HWMON_F_INPUT),
 	HWMON_CHANNEL_INFO(fan, HWMON_F_MAX, HWMON_F_MAX),
-	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_ENABLE, HWMON_PWM_ENABLE),
-	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_INPUT, HWMON_PWM_INPUT),
+	HWMON_CHANNEL_INFO(fan, HWMON_F_TARGET, HWMON_F_TARGET),
+	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_ENABLE),
 	NULL
 };
 
