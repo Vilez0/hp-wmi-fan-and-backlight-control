@@ -1489,11 +1489,13 @@ static int __init hp_mc_leds_register(int num_zones)
 		  sizeof(color_table));
 
 	for (int zone = 0; zone < num_zones; zone++) {
-		static struct led_classdev_mc multicolor_led_dev;
-		struct led_classdev *led_cdev;
-		struct mc_subled *mc_subled_info; 
+		static struct led_classdev_mc *multicolor_led_dev;
+		static struct led_classdev *led_cdev;
+		static struct mc_subled *mc_subled_info; 
 
-		led_cdev = &multicolor_led_dev.led_cdev;
+		multicolor_led_dev = &hp_multicolor_leds.devices[zone];
+		led_cdev = &multicolor_led_dev->led_cdev;
+
 		led_cdev->name = kasprintf(GFP_KERNEL, "hp::kbd_backlight");
 		if (num_zones > 1) {
 			led_cdev->name = kasprintf(GFP_KERNEL, "hp::kbd_backlight_zone%d", zone);
@@ -1519,15 +1521,14 @@ static int __init hp_mc_leds_register(int num_zones)
 			mc_subled_info[i].brightness = LED_FULL;
 		}
 
-		multicolor_led_dev.subled_info = mc_subled_info;
-		multicolor_led_dev.num_colors = 3;
+		multicolor_led_dev->subled_info = mc_subled_info;
+		multicolor_led_dev->num_colors = 3;
 
-		int ret = devm_led_classdev_multicolor_register(&hp_wmi_platform_dev->dev, &multicolor_led_dev);
+		int ret = devm_led_classdev_multicolor_register(&hp_wmi_platform_dev->dev, multicolor_led_dev);
 		if (ret) {
 			pr_err("Failed to register multicolor LED: %d\n", ret);
 			return ret;
 		}
-		hp_multicolor_leds.devices[zone] = multicolor_led_dev;
 	}
 	return 0;
 }
