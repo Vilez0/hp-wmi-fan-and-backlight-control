@@ -1546,7 +1546,7 @@ static int __init hp_kbd_rgb_setup(void)
 		case HP_KEYBOARD_TYPE_FOURZONE_WITHOUT_NUMPAD:
 			pr_info("keyboard type %d, four zone RGB keyboard support\n",
 				keyboard_type);
-			return hp_mc_leds_register(4); WIP
+			return hp_mc_leds_register(4);
 			// return -ENODEV;
 		case HP_KEYBOARD_TYPE_RGB_PER_KEY:
 			pr_info("per key-RGB keyboard detected but not supported yet\n");
