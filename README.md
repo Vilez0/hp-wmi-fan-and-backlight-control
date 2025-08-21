@@ -2,6 +2,13 @@
 
 This is an Initial module for manual fan control and keyboard RGB for devices that support it. Single‑zone RGB works now; I plan to add 4‑zone but I need testers.
 
+> [!NOTE]
+> **HP Victus 15:** For some reason, HP didnt mark manual fan control supported on HP Victus 15 laptops, even though the hardware supports it. So by default manual fan control is not enabled in this module. But if you want to turn it on, load the module with the `force_fan_control_support=true` parameter.
+>
+> ```bash
+> sudo insmod hp-wmi.ko force_fan_control_support=true
+> ```
+
 ### Installation:
 
 Dkms:

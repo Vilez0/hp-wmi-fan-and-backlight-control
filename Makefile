@@ -18,6 +18,7 @@ all:
 # Clean target
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -rf *.pkg.tar.zst
 
 install: all
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
