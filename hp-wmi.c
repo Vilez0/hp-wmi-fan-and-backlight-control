@@ -1415,8 +1415,11 @@ static int hp_kbd_backlight_set_rgb_color(int zone, int red, int green, int blue
 	int ret;
 	u8 color_table[128]; 
 
-	color_table[0] = HPWMI_COLOR_SET_QUERY;
-	// RGB color data starts at offset 25 +3 per zone, e.g. if zone 1 starts in 25 zone 2 starts in 28
+	hp_wmi_perform_query(HPWMI_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
+		  color_table, zero_if_sup(color_table),
+		  sizeof(color_table));
+
+	// RGB color data starts at offset 25 and +3 per zone, e.g. if zone 1 starts in 25 zone 2 starts in 28
 	color_table[25 + zone * 3] = red;
 	color_table[26 + zone * 3] = green;
 	color_table[27 + zone * 3] = blue;
