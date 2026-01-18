@@ -2371,13 +2371,14 @@ static int hp_wmi_setup_fan_settings(struct hp_wmi_hwmon_priv *priv)
 	ret = hp_wmi_perform_query(HPWMI_VICTUS_S_GET_FAN_TABLE_QUERY,
 				   HPWMI_GM, &fan_data, 4, sizeof(fan_data));
 	if (ret)
-		return ret;
+		pr_info("Failed to get fan table: %d\n", ret);
 
 	fan_table = (struct victus_s_fan_table *)fan_data;
 	if (fan_table->header.num_entries == 0 ||
 	    sizeof(struct victus_s_fan_table_header) +
 	    sizeof(struct victus_s_fan_table_entry) * fan_table->header.num_entries > sizeof(fan_data))
-		return -EINVAL;
+		//return -EINVAL;
+		pr_info("Invalid fan table data\n");
 
 	min_rpm = fan_table->entries[0].cpu_rpm;
 	max_rpm = fan_table->entries[fan_table->header.num_entries - 1].cpu_rpm;
