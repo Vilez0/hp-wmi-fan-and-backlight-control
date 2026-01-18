@@ -2199,7 +2199,7 @@ static int hp_wmi_apply_fan_settings(struct hp_wmi_hwmon_priv *priv)
 		ret = hp_wmi_fan_speed_max_set(1);
 		return ret;
 	case PWM_MODE_MANUAL:
-		if (!is_manual_fan_control_board())
+		if (!is_victus_s_thermal_profile())
 			return -EOPNOTSUPP;
 		ret = hp_wmi_fan_speed_set(priv, pwm_to_rpm(priv->pwm, priv));
 		return ret;
