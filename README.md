@@ -31,6 +31,33 @@ cd hp-wmi-fan-and-backlight-control
 make install-arch
 ```
 
+NixOS module:
+
+In your system flake, add the repo as an input and enable the module:
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    hp-wmi-control.url = "github:TUXOV/hp-wmi-fan-and-backlight-control"; # or a local path
+  };
+  outputs = { self, nixpkgs, hp-wmi-control, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        hp-wmi-control.nixosModules.default
+        {
+          hardware.hp-wmi-control = {
+            enable = true;
+            # victus-15-support.enable = true; # To add optional Victus 15 support
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
 or if you just want to test the module (not permanent):
 ```bash
 git clone https://github.com/TUXOV/hp-wmi-fan-and-backlight-control
