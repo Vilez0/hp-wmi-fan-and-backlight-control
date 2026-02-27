@@ -529,7 +529,7 @@ static int hp_wmi_get_fan_count_userdefine_trigger(void)
 static void hp_victus_s_work_handler(struct work_struct *work)
 {
     hp_wmi_get_fan_count_userdefine_trigger();
-    schedule_delayed_work(to_delayed_work(work), secs_to_jiffies(HP_VICTUS_S_THERMAL_PROFILE_TIMER_SECONDS));
+    schedule_delayed_work(to_delayed_work(work), msecs_to_jiffies(HP_VICTUS_S_THERMAL_PROFILE_TIMER_SECONDS * 1000));
 }
 
 
@@ -2622,7 +2622,7 @@ static int hp_wmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 		}
 		break;
 	case hwmon_fan:
-		if (val > hp_fan_control.max_rpms[channel] && !force_fan_control_support || val < 0)
+		if ((val > hp_fan_control.max_rpms[channel] && !force_fan_control_support) || val < 0)
 			return -EINVAL;
 		if (hp_fan_control.have_manual_control) {
 			if (is_victus_s_thermal_profile())
@@ -2714,7 +2714,7 @@ static int __init hp_wmi_init(void)
 			goto err_unregister_device;
 
         INIT_DELAYED_WORK(&hp_fan_control.victus_s_thermal_profile_trigger_work, hp_victus_s_work_handler);
-        schedule_delayed_work(&hp_fan_control.victus_s_thermal_profile_trigger_work, secs_to_jiffies(HP_VICTUS_S_THERMAL_PROFILE_TIMER_SECONDS));
+        schedule_delayed_work(&hp_fan_control.victus_s_thermal_profile_trigger_work, msecs_to_jiffies(HP_VICTUS_S_THERMAL_PROFILE_TIMER_SECONDS * 1000));
 	}
 
 	return 0;

@@ -5,11 +5,13 @@ obj-m += hp-wmi.o
 # Kernel build directory
 KDIR := /lib/modules/$(shell uname -r)/build
 
-PKGNAME := $(shell grep -oP 'PACKAGE_NAME="\K[^"]+' dkms.conf)
-VERSION := $(shell grep -oP 'PACKAGE_VERSION="\K[^"]+' dkms.conf)
-
 # Current directory
 PWD := $(shell pwd)
+
+# Get package info from dkms.conf
+DKMS_CONF := $(PWD)/dkms.conf
+PKGNAME := $(shell grep -oP 'PACKAGE_NAME="\K[^"]+' $(DKMS_CONF) 2>/dev/null)
+VERSION := $(shell grep -oP 'PACKAGE_VERSION="\K[^"]+' $(DKMS_CONF) 2>/dev/null)
 
 # Default target
 all:
