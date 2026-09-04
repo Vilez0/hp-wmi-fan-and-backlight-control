@@ -65,6 +65,7 @@ enum hp_ec_offsets {
 #define HP_POWER_LIMIT_DEFAULT	 0x00
 #define HP_POWER_LIMIT_NO_CHANGE 0xFF
 #define HP_BACKLIGHT_ON		 0xE4
+#define HP_BACKLIGHT_OFF	 0x64
 #define HPWMI_MUX_MODE_UMA		BIT(0)
 #define HPWMI_MUX_MODE_HYBRID		BIT(1)
 #define HPWMI_MUX_MODE_DISCRETE		BIT(2)
@@ -1817,6 +1818,27 @@ static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(led_cdev);
 	int red, green, blue, ret, i;
 
+	if (brightness == LED_OFF) {
+		u8 data = HP_BACKLIGHT_OFF;
+
+		/*
+		 * Turn the backlight off without clearing the color table,
+		 * so colors set while it is off are used when it is turned
+		 * on again.
+		 */
+		ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
+					   &data, sizeof(data), sizeof(data));
+		if (ret)
+			return ret;
+
+		led_cdev->brightness = brightness;
+
+		return hp_kbd_backlight_set_rgb_color(priv->zone,
+				mc_cdev->subled_info[0].intensity,
+				mc_cdev->subled_info[1].intensity,
+				mc_cdev->subled_info[2].intensity);
+	}
+
 	if (!hp_kbd_backlight_is_on()) {
 		u8 data = HP_BACKLIGHT_ON;
 
@@ -1827,7 +1849,7 @@ static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 
 		/*
 		 * Turning the backlight on via WMI turns on all zones, so we
-		 * need to restore the other zones' brightness.
+		 * need to restore the other zones' colors.
 		 */
 		for (i = 0; i < HP_KBD_MAX_ZONES; i++) {
 			struct led_classdev_mc *device = &hp_multicolor_leds.devices[i];
@@ -1836,9 +1858,9 @@ static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 				continue;
 
 			hp_kbd_backlight_set_rgb_color(i,
-					device->subled_info[0].brightness,
-					device->subled_info[1].brightness,
-					device->subled_info[2].brightness);
+					device->subled_info[0].intensity,
+					device->subled_info[1].intensity,
+					device->subled_info[2].intensity);
 		}
 	}
 
