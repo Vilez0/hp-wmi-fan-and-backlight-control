@@ -64,19 +64,20 @@ sudo insmod hp-wmi.ko
 ```
 
 ### Usage 
-- Keyboard RGB (4-zone): each zone is exposed as a multicolor LED under `/sys/class/leds/`, named after the part of the keyboard it covers (per `Documentation/leds/leds-class.rst`):
-  - `/sys/class/leds/rgb:kbd_zoned_backlight-left`
-  - `/sys/class/leds/rgb:kbd_zoned_backlight-center-left`
-  - `/sys/class/leds/rgb:kbd_zoned_backlight-center-right`
-  - `/sys/class/leds/rgb:kbd_zoned_backlight-right`
+- Keyboard RGB (4-zone): each zone is exposed as a multicolor LED under `/sys/class/leds/`, named after the part of the keyboard it covers (per `Documentation/leds/leds-class.rst`). HP 4-zone keyboards light up the WASD keys plus three vertical thirds of the rest of the keyboard:
+  - `/sys/class/leds/hp::kbd_zoned_backlight-left`
+  - `/sys/class/leds/hp::kbd_zoned_backlight-middle`
+  - `/sys/class/leds/hp::kbd_zoned_backlight-right`
+  - `/sys/class/leds/hp::kbd_zoned_backlight-wasd`
   - Use the multicolor interface attribute `multi_intensity` which accepts `R G B` (0–255 each).
   - Example:
     ```bash
-    echo "255 0 0" | sudo tee /sys/class/leds/rgb:kbd_zoned_backlight-left/multi_intensity # Set left zone to red
-    echo 128 | sudo tee /sys/class/leds/rgb:kbd_zoned_backlight-left/brightness # Change brightness to 50% (0-255)
+    echo "255 0 0" | sudo tee /sys/class/leds/hp::kbd_zoned_backlight-left/multi_intensity # Set left zone to red
+    echo 128 | sudo tee /sys/class/leds/hp::kbd_zoned_backlight-left/brightness # Change brightness to 50% (0-255)
     ```
+  - Brightness changes made with the keyboard backlight hotkey (Fn+F4) are reported to userspace via the LED class `brightness_hw_changed` uevent.
 
-- Keyboard RGB (single-zone): `/sys/class/leds/rgb:kbd_backlight`, same `multi_intensity`/`brightness` attributes as above.
+- Keyboard RGB (single-zone): `/sys/class/leds/hp::kbd_backlight`, same `multi_intensity`/`brightness` attributes as above.
 
 - Fans: standard hwmon interface via `pwmX_enable`, `pwmX` and `fanX_input` (see Documentation/ABI/testing/sysfs-class-hwmon):
     ```bash

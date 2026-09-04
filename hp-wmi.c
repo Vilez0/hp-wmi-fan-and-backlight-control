@@ -550,22 +550,32 @@ static const struct key_entry hp_wmi_keymap[] = {
 static DEFINE_MUTEX(active_platform_profile_lock);
 
 #define HP_KBD_MAX_ZONES	4
+#define HP_KBD_NUM_COLORS	3
 
 /*
- * Keyboard backlight zones as expected by userspace, see
- * Documentation/leds/leds-class.rst ("kbd_zled" naming scheme).
+ * Zone names for 4-zone keyboards (HP Omen/Victus), following the zoned
+ * keyboard backlight naming scheme from Documentation/leds/leds-class.rst.
+ * The WMI zone index to physical zone mapping matches the upstream patch
+ * "hp-wmi: Add multicolor LED support for HP keyboard backlight" (v10).
  */
 static const char * const hp_kbd_zone_names[HP_KBD_MAX_ZONES] = {
-	"left", "center-left", "center-right", "right",
+	[0] = "right",
+	[1] = "middle",
+	[2] = "left",
+	[3] = "wasd",
+};
+
+struct hp_kbd_led_priv {
+	int zone;			/* Zone index (0-3) */
+	enum led_brightness last_brightness;  /* Brightness before turning off */
 };
 
 struct hp_mc_leds {
 	struct led_classdev_mc devices[HP_KBD_MAX_ZONES];
-	enum led_brightness last_brightness[HP_KBD_MAX_ZONES];
+	struct hp_kbd_led_priv priv[HP_KBD_MAX_ZONES];
 };
 
 static struct hp_mc_leds hp_multicolor_leds;
-static int hp_kbd_num_zones;
 
 static struct input_dev *hp_wmi_input_dev;
 static struct input_dev *camera_shutter_input_dev;
@@ -1381,6 +1391,8 @@ static struct attribute *hp_wmi_attrs[] = {
 };
 ATTRIBUTE_GROUPS(hp_wmi);
 
+static void hp_kbd_brightness_set_by_hwd(u32 event_data);
+
 static void hp_wmi_notify(union acpi_object *obj, void *context)
 {
 	u32 event_id, event_data;
@@ -1481,6 +1493,7 @@ static void hp_wmi_notify(union acpi_object *obj, void *context)
 	case HPWMI_PROXIMITY_SENSOR:
 		break;
 	case HPWMI_BACKLIT_KB_BRIGHTNESS:
+		hp_kbd_brightness_set_by_hwd(event_data);
 		break;
 	case HPWMI_PEAKSHIFT_PERIOD:
 		break;
@@ -1746,9 +1759,12 @@ fail:
 static bool hp_kbd_backlight_is_on(void)
 {
 	u8 data = 0;
+	int ret;
 
-	hp_wmi_perform_query(HPWMI_BRIGHTNESS_GET_QUERY, HPWMI_BACKLIGHT, &data,
-			     sizeof(data), sizeof(data));
+	ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_GET_QUERY, HPWMI_BACKLIGHT, &data,
+				   sizeof(data), sizeof(data));
+	if (ret)
+		return false;
 
 	return data == HP_BACKLIGHT_ON;
 }
@@ -1768,77 +1784,61 @@ static int hp_kbd_backlight_set_rgb_color(int zone, u8 red, u8 green, u8 blue)
 	 * RGB color data starts at offset 25 with 3 bytes per zone, e.g. if
 	 * zone 1 starts at 25, zone 2 starts at 28.
 	 */
-	color_table[25 + zone * 3] = red;
-	color_table[26 + zone * 3] = green;
-	color_table[27 + zone * 3] = blue;
+	color_table[25 + zone * HP_KBD_NUM_COLORS] = red;
+	color_table[26 + zone * HP_KBD_NUM_COLORS] = green;
+	color_table[27 + zone * HP_KBD_NUM_COLORS] = blue;
 
 	ret = hp_wmi_perform_query(HPWMI_COLOR_SET_QUERY, HPWMI_BACKLIGHT,
 				   color_table, sizeof(color_table),
 				   sizeof(color_table));
-	if (ret) {
+	if (ret < 0) {
 		dev_err(&hp_wmi_platform_dev->dev,
 			"RGB setting failed with error: %d\n", ret);
-		return ret < 0 ? ret : -EINVAL;
+		return ret;
 	}
+	if (ret)
+		return -EINVAL;
 
 	return 0;
 }
 
-static int hp_kbd_get_zone(struct led_classdev *led_cdev)
+static struct hp_kbd_led_priv *hp_led_get_priv(struct led_classdev *led_cdev)
 {
-	int zone;
+	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(led_cdev);
+	int zone = mc_cdev - hp_multicolor_leds.devices;
 
-	for (zone = 0; zone < HP_KBD_MAX_ZONES; zone++) {
-		if (hp_multicolor_leds.devices[zone].led_cdev.name == led_cdev->name)
-			return zone;
-	}
-
-	return -1;
-}
-
-static enum led_brightness hp_kbd_get_brightness(struct led_classdev *led_cdev)
-{
-	int zone = hp_kbd_get_zone(led_cdev);
-	bool led_on;
-
-	if (zone < 0)
-		return LED_OFF;
-
-	led_on = hp_kbd_backlight_is_on();
-	if (!led_on && led_cdev->brightness != LED_OFF) {
-		hp_multicolor_leds.last_brightness[zone] = led_cdev->brightness;
-		return LED_OFF;
-	}
-
-	if (led_on && led_cdev->brightness == LED_OFF)
-		return hp_multicolor_leds.last_brightness[zone];
-
-	return led_cdev->brightness;
+	return &hp_multicolor_leds.priv[zone];
 }
 
 static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 				 enum led_brightness brightness)
 {
+	struct hp_kbd_led_priv *priv = hp_led_get_priv(led_cdev);
 	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(led_cdev);
-	int red, green, blue, zone, i;
+	int red, green, blue, ret, i;
 
 	if (!hp_kbd_backlight_is_on()) {
 		u8 data = HP_BACKLIGHT_ON;
 
-		hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
-				     &data, sizeof(data), sizeof(data));
+		ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
+					   &data, sizeof(data), sizeof(data));
+		if (ret)
+			return ret;
 
 		/*
 		 * Turning the backlight on via WMI turns on all zones, so we
 		 * need to restore the other zones' brightness.
 		 */
 		for (i = 0; i < HP_KBD_MAX_ZONES; i++) {
-			if (!hp_multicolor_leds.devices[i].led_cdev.name ||
-			    &hp_multicolor_leds.devices[i].led_cdev == led_cdev)
+			struct led_classdev_mc *device = &hp_multicolor_leds.devices[i];
+
+			if (i == priv->zone || !device->led_cdev.name)
 				continue;
 
-			hp_kbd_set_brightness(&hp_multicolor_leds.devices[i].led_cdev,
-					      hp_multicolor_leds.devices[i].led_cdev.brightness);
+			hp_kbd_backlight_set_rgb_color(i,
+					device->subled_info[0].brightness,
+					device->subled_info[1].brightness,
+					device->subled_info[2].brightness);
 		}
 	}
 
@@ -1850,15 +1850,46 @@ static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 	green = mc_cdev->subled_info[1].brightness;
 	blue = mc_cdev->subled_info[2].brightness;
 
-	zone = hp_kbd_get_zone(led_cdev);
-	if (zone < 0)
-		return -EINVAL;
+	return hp_kbd_backlight_set_rgb_color(priv->zone, red, green, blue);
+}
 
-	return hp_kbd_backlight_set_rgb_color(zone, red, green, blue);
+static void hp_kbd_brightness_set_by_hwd(u32 event_data)
+{
+	struct device *dev = &hp_wmi_platform_dev->dev;
+	struct led_classdev *led_cdev;
+	struct hp_kbd_led_priv *priv;
+	enum led_brightness brightness;
+	int zone;
+
+	for (zone = 0; zone < HP_KBD_MAX_ZONES; zone++) {
+		if (!hp_multicolor_leds.devices[zone].led_cdev.name)
+			continue;
+
+		led_cdev = &hp_multicolor_leds.devices[zone].led_cdev;
+		if (!led_cdev->dev)
+			continue;
+
+		priv = &hp_multicolor_leds.priv[zone];
+
+		if (event_data == 0x2) {
+			brightness = priv->last_brightness ? : LED_FULL;
+		} else if (event_data == 0x0) {
+			priv->last_brightness = led_cdev->brightness;
+			brightness = LED_OFF;
+		} else {
+			dev_warn(dev, "Unknown keyboard backlight event - 0x%x\n",
+				 event_data);
+			return;
+		}
+
+		led_cdev->brightness = brightness;
+		led_classdev_notify_brightness_hw_changed(led_cdev, brightness);
+	}
 }
 
 static int hp_mc_leds_register(int num_zones)
 {
+	struct device *dev = &hp_wmi_platform_dev->dev;
 	u8 color_table[128];
 	int zone, i, ret;
 
@@ -1875,22 +1906,23 @@ static int hp_mc_leds_register(int num_zones)
 		struct mc_subled *mc_subled_info;
 
 		if (num_zones == 1)
-			led_cdev->name = kasprintf(GFP_KERNEL, "rgb:kbd_backlight");
+			led_cdev->name = devm_kasprintf(dev, GFP_KERNEL,
+							"hp::kbd_backlight");
 		else
-			led_cdev->name = kasprintf(GFP_KERNEL,
-						   "rgb:kbd_zoned_backlight-%s",
-						   hp_kbd_zone_names[zone]);
+			led_cdev->name = devm_kasprintf(dev, GFP_KERNEL,
+							"hp::kbd_zoned_backlight-%s",
+							hp_kbd_zone_names[zone]);
 		if (!led_cdev->name)
 			return -ENOMEM;
 
 		led_cdev->brightness = hp_kbd_backlight_is_on() ? LED_FULL : LED_OFF;
 		led_cdev->max_brightness = LED_FULL;
 		led_cdev->brightness_set_blocking = hp_kbd_set_brightness;
-		led_cdev->flags = LED_RETAIN_AT_SHUTDOWN | LED_CORE_SUSPENDRESUME;
-		led_cdev->brightness_get = hp_kbd_get_brightness;
+		led_cdev->flags = LED_RETAIN_AT_SHUTDOWN | LED_CORE_SUSPENDRESUME |
+				  LED_BRIGHT_HW_CHANGED;
 
-		mc_subled_info = devm_kzalloc(&hp_wmi_platform_dev->dev,
-					      sizeof(*mc_subled_info) * 3,
+		mc_subled_info = devm_kzalloc(dev,
+					      sizeof(*mc_subled_info) * HP_KBD_NUM_COLORS,
 					      GFP_KERNEL);
 		if (!mc_subled_info)
 			return -ENOMEM;
@@ -1899,25 +1931,25 @@ static int hp_mc_leds_register(int num_zones)
 		mc_subled_info[1].color_index = LED_COLOR_ID_GREEN;
 		mc_subled_info[2].color_index = LED_COLOR_ID_BLUE;
 
-		for (i = 0; i < 3; i++) {
-			mc_subled_info[i].channel = zone * 3 + i;
+		for (i = 0; i < HP_KBD_NUM_COLORS; i++) {
+			mc_subled_info[i].channel = zone * HP_KBD_NUM_COLORS + i;
 			/* RGB color values start at offset 25, 3 bytes per zone */
-			mc_subled_info[i].intensity = color_table[25 + zone * 3 + i];
+			mc_subled_info[i].intensity = color_table[25 + zone * HP_KBD_NUM_COLORS + i];
 			mc_subled_info[i].brightness = LED_FULL;
 		}
 
 		multicolor_led_dev->subled_info = mc_subled_info;
 		multicolor_led_dev->num_colors = 3;
 
-		ret = devm_led_classdev_multicolor_register(&hp_wmi_platform_dev->dev,
-							    multicolor_led_dev);
+		ret = devm_led_classdev_multicolor_register(dev, multicolor_led_dev);
 		if (ret) {
-			dev_err(&hp_wmi_platform_dev->dev,
-				"Failed to register multicolor LED: %d\n", ret);
-			kfree(led_cdev->name);
-			led_cdev->name = NULL;
+			dev_err(dev, "Failed to register multicolor LED: %d\n", ret);
 			return ret;
 		}
+
+		/* Initialize private data */
+		hp_multicolor_leds.priv[zone].zone = zone;
+		hp_multicolor_leds.priv[zone].last_brightness = LED_FULL;
 	}
 
 	return 0;
@@ -1935,33 +1967,15 @@ static int hp_kbd_rgb_setup(void)
 		return ret;
 
 	switch (keyboard_type) {
-	case HP_KEYBOARD_TYPE_NORMAL:
-		dev_info(&hp_wmi_platform_dev->dev,
-			 "Normal keyboard detected, RGB keyboard support not available\n");
-		return -ENODEV;
 	case HP_KEYBOARD_TYPE_FOURZONE_WITH_NUMPAD:
 	case HP_KEYBOARD_TYPE_FOURZONE_WITHOUT_NUMPAD:
-		dev_info(&hp_wmi_platform_dev->dev,
-			 "Keyboard type %d, four zone RGB keyboard support\n",
-			 keyboard_type);
-		hp_kbd_num_zones = 4;
 		return hp_mc_leds_register(4);
-	case HP_KEYBOARD_TYPE_RGB_PER_KEY:
-		dev_info(&hp_wmi_platform_dev->dev,
-			 "Per key RGB keyboard detected but not supported yet\n");
-		return -ENODEV;
 	case HP_KEYBOARD_TYPE_SINGLEZONE_WITH_NUMPAD:
 	case HP_KEYBOARD_TYPE_SINGLEZONE_WITHOUT_NUMPAD:
-		dev_info(&hp_wmi_platform_dev->dev,
-			 "Keyboard type %d, single zone RGB keyboard support\n",
-			 keyboard_type);
-		hp_kbd_num_zones = 1;
 		return hp_mc_leds_register(1);
 	default:
-		dev_info(&hp_wmi_platform_dev->dev,
-			 "Unknown keyboard type %d, RGB keyboard support not available\n",
-			 keyboard_type);
-		return -ENODEV;
+		/* No RGB keyboard support for this keyboard type */
+		return 0;
 	}
 }
 
@@ -2880,7 +2894,10 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 #else
 	thermal_profile_setup();
 #endif
-	hp_kbd_rgb_setup();
+
+	err = hp_kbd_rgb_setup();
+	if (err)
+		dev_err(&device->dev, "Failed to initialize keyboard RGB\n");
 
 	return 0;
 }
