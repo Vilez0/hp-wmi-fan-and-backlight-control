@@ -63,9 +63,8 @@ enum hp_ec_offsets {
 
 #define HP_FAN_SPEED_AUTOMATIC	 0x00
 #define HP_POWER_LIMIT_DEFAULT	 0x00
+#define HP_COLOR_TABLE_PADDING	 25
 #define HP_POWER_LIMIT_NO_CHANGE 0xFF
-#define HP_BACKLIGHT_ON		 0xE4
-#define HP_BACKLIGHT_OFF	 0x64
 #define HPWMI_MUX_MODE_UMA		BIT(0)
 #define HPWMI_MUX_MODE_HYBRID		BIT(1)
 #define HPWMI_MUX_MODE_DISCRETE		BIT(2)
@@ -412,7 +411,6 @@ enum hp_wmi_commandtype {
 	HPWMI_SYSTEM_DEVICE_MODE	= 0x40,
 	HPWMI_THERMAL_PROFILE_QUERY	= 0x4c,
 	HPWMI_GRAPHICS_MUX_QUERY	= 0x52,
-	HPWMI_KEYBOARD_TYPE_QUERY	= 0x2b,
 };
 
 struct victus_power_limits {
@@ -439,16 +437,19 @@ enum hp_wmi_gm_commandtype {
 	HPWMI_GET_GPU_THERMAL_MODES_QUERY	= 0x21,
 	HPWMI_SET_GPU_THERMAL_MODES_QUERY	= 0x22,
 	HPWMI_SET_POWER_LIMITS_QUERY		= 0x29,
+	HPWMI_GET_KEYBOARD_TYPE_QUERY		= 0x2b,
 	HPWMI_VICTUS_S_FAN_SPEED_GET_QUERY	= 0x2D,
 	HPWMI_VICTUS_S_FAN_SPEED_SET_QUERY	= 0x2E,
 	HPWMI_VICTUS_S_GET_FAN_TABLE_QUERY	= 0x2F,
 };
 
 enum hp_wmi_backlight_commandtype {
-	HPWMI_COLOR_GET_QUERY		= 0x02,
-	HPWMI_COLOR_SET_QUERY		= 0x03,
-	HPWMI_BRIGHTNESS_GET_QUERY	= 0x04,
-	HPWMI_BRIGHTNESS_SET_QUERY	= 0x05,
+	HPWMI_BACKLIGHT_COLOR_GET_QUERY		= 0x02,
+	HPWMI_BACKLIGHT_COLOR_SET_QUERY		= 0x03,
+	HPWMI_BACKLIGHT_BRIGHTNESS_GET_QUERY	= 0x04,
+	HPWMI_BACKLIGHT_BRIGHTNESS_SET_QUERY	= 0x05,
+	HPWMI_BACKLIGHT_SET_OFF_QUERY		= 0x64,
+	HPWMI_BACKLIGHT_SET_ON_QUERY		= 0xE4,
 };
 
 enum hp_keyboard_type {
@@ -1762,12 +1763,12 @@ static bool hp_kbd_backlight_is_on(void)
 	u8 data = 0;
 	int ret;
 
-	ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_GET_QUERY, HPWMI_BACKLIGHT, &data,
+	ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_BRIGHTNESS_GET_QUERY, HPWMI_BACKLIGHT, &data,
 				   sizeof(data), sizeof(data));
 	if (ret)
 		return false;
 
-	return data == HP_BACKLIGHT_ON;
+	return data == HPWMI_BACKLIGHT_SET_ON_QUERY;
 }
 
 static int hp_kbd_backlight_set_rgb_color(int zone, u8 red, u8 green, u8 blue)
@@ -1775,21 +1776,21 @@ static int hp_kbd_backlight_set_rgb_color(int zone, u8 red, u8 green, u8 blue)
 	u8 color_table[128];
 	int ret;
 
-	ret = hp_wmi_perform_query(HPWMI_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
+	ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
 				   color_table, zero_if_sup(color_table),
 				   sizeof(color_table));
 	if (ret)
 		return ret;
 
 	/*
-	 * RGB color data starts at offset 25 with 3 bytes per zone, e.g. if
-	 * zone 1 starts at 25, zone 2 starts at 28.
+	 * RGB color data starts at offset HP_COLOR_TABLE_PADDING with 3 bytes
+	 * per zone, e.g. if zone 1 starts at 25, zone 2 starts at 28.
 	 */
-	color_table[25 + zone * HP_KBD_NUM_COLORS] = red;
-	color_table[26 + zone * HP_KBD_NUM_COLORS] = green;
-	color_table[27 + zone * HP_KBD_NUM_COLORS] = blue;
+	color_table[HP_COLOR_TABLE_PADDING + zone * HP_KBD_NUM_COLORS] = red;
+	color_table[HP_COLOR_TABLE_PADDING + zone * HP_KBD_NUM_COLORS + 1] = green;
+	color_table[HP_COLOR_TABLE_PADDING + zone * HP_KBD_NUM_COLORS + 2] = blue;
 
-	ret = hp_wmi_perform_query(HPWMI_COLOR_SET_QUERY, HPWMI_BACKLIGHT,
+	ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_COLOR_SET_QUERY, HPWMI_BACKLIGHT,
 				   color_table, sizeof(color_table),
 				   sizeof(color_table));
 	if (ret < 0) {
@@ -1811,56 +1812,69 @@ static struct hp_kbd_led_priv *hp_led_get_priv(struct led_classdev *led_cdev)
 	return &hp_multicolor_leds.priv[zone];
 }
 
+/*
+ * Set the brightness of a single keyboard zone.
+ *
+ * The backlight is a single global light: turning it on via WMI turns on
+ * every zone, and turning it off via WMI turns off every zone.  The zone
+ * colors are stored by the EC in a persistent color table, so a physical
+ * off/on cycle restores the last color without the driver having to track
+ * it.  A zone is dimmed (or turned off) by scaling its color components
+ * down before writing them to the color table.
+ */
 static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 				 enum led_brightness brightness)
 {
 	struct hp_kbd_led_priv *priv = hp_led_get_priv(led_cdev);
 	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(led_cdev);
+	struct led_classdev_mc *device;
 	int red, green, blue, ret, i;
 
 	if (brightness == LED_OFF) {
-		u8 data = HP_BACKLIGHT_OFF;
+		u8 data = HPWMI_BACKLIGHT_SET_OFF_QUERY;
 
 		/*
-		 * Turn the backlight off without clearing the color table,
-		 * so colors set while it is off are used when it is turned
-		 * on again.
+		 * Physically turn the backlight off.  Do not touch the color
+		 * table: the EC keeps the current zone colors and reapplies
+		 * them when the backlight is turned back on.
 		 */
-		ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
+		ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
 					   &data, sizeof(data), sizeof(data));
 		if (ret)
 			return ret;
 
 		led_cdev->brightness = brightness;
 
-		return hp_kbd_backlight_set_rgb_color(priv->zone,
-				mc_cdev->subled_info[0].intensity,
-				mc_cdev->subled_info[1].intensity,
-				mc_cdev->subled_info[2].intensity);
+		return 0;
 	}
 
 	if (!hp_kbd_backlight_is_on()) {
-		u8 data = HP_BACKLIGHT_ON;
+		u8 data = HPWMI_BACKLIGHT_SET_ON_QUERY;
 
-		ret = hp_wmi_perform_query(HPWMI_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
+		ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_BRIGHTNESS_SET_QUERY, HPWMI_BACKLIGHT,
 					   &data, sizeof(data), sizeof(data));
 		if (ret)
 			return ret;
 
 		/*
 		 * Turning the backlight on via WMI turns on all zones, so we
-		 * need to restore the other zones' colors.
+		 * need to restore the other zones' colors at their current
+		 * brightness.
 		 */
 		for (i = 0; i < HP_KBD_MAX_ZONES; i++) {
-			struct led_classdev_mc *device = &hp_multicolor_leds.devices[i];
-
-			if (i == priv->zone || !device->led_cdev.name)
+			if (i == priv->zone)
 				continue;
 
-			hp_kbd_backlight_set_rgb_color(i,
-					device->subled_info[0].intensity,
-					device->subled_info[1].intensity,
-					device->subled_info[2].intensity);
+			device = &hp_multicolor_leds.devices[i];
+			if (!device->led_cdev.name)
+				continue;
+
+			ret = hp_kbd_backlight_set_rgb_color(i,
+					device->subled_info[0].brightness,
+					device->subled_info[1].brightness,
+					device->subled_info[2].brightness);
+			if (ret)
+				return ret;
 		}
 	}
 
@@ -1874,6 +1888,9 @@ static int hp_kbd_set_brightness(struct led_classdev *led_cdev,
 
 	return hp_kbd_backlight_set_rgb_color(priv->zone, red, green, blue);
 }
+
+#define HP_KBD_BACKLIGHT_EVENT_OFF	0x0
+#define HP_KBD_BACKLIGHT_EVENT_ON	0x2
 
 static void hp_kbd_brightness_set_by_hwd(u32 event_data)
 {
@@ -1893,12 +1910,15 @@ static void hp_kbd_brightness_set_by_hwd(u32 event_data)
 
 		priv = &hp_multicolor_leds.priv[zone];
 
-		if (event_data == 0x2) {
+		switch (event_data) {
+		case HP_KBD_BACKLIGHT_EVENT_ON:
 			brightness = priv->last_brightness ? : LED_FULL;
-		} else if (event_data == 0x0) {
+			break;
+		case HP_KBD_BACKLIGHT_EVENT_OFF:
 			priv->last_brightness = led_cdev->brightness;
 			brightness = LED_OFF;
-		} else {
+			break;
+		default:
 			dev_warn(dev, "Unknown keyboard backlight event - 0x%x\n",
 				 event_data);
 			return;
@@ -1915,7 +1935,7 @@ static int hp_mc_leds_register(int num_zones)
 	u8 color_table[128];
 	int zone, i, ret;
 
-	ret = hp_wmi_perform_query(HPWMI_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
+	ret = hp_wmi_perform_query(HPWMI_BACKLIGHT_COLOR_GET_QUERY, HPWMI_BACKLIGHT,
 				   color_table, zero_if_sup(color_table),
 				   sizeof(color_table));
 	if (ret)
@@ -1956,7 +1976,8 @@ static int hp_mc_leds_register(int num_zones)
 		for (i = 0; i < HP_KBD_NUM_COLORS; i++) {
 			mc_subled_info[i].channel = zone * HP_KBD_NUM_COLORS + i;
 			/* RGB color values start at offset 25, 3 bytes per zone */
-			mc_subled_info[i].intensity = color_table[25 + zone * HP_KBD_NUM_COLORS + i];
+			mc_subled_info[i].intensity =
+				color_table[HP_COLOR_TABLE_PADDING + zone * HP_KBD_NUM_COLORS + i];
 			mc_subled_info[i].brightness = LED_FULL;
 		}
 
@@ -1982,7 +2003,7 @@ static int hp_kbd_rgb_setup(void)
 	u8 keyboard_type = 0;
 	int ret;
 
-	ret = hp_wmi_perform_query(HPWMI_KEYBOARD_TYPE_QUERY, HPWMI_GM,
+	ret = hp_wmi_perform_query(HPWMI_GET_KEYBOARD_TYPE_QUERY, HPWMI_GM,
 				   &keyboard_type, sizeof(keyboard_type),
 				   sizeof(keyboard_type));
 	if (ret)
